@@ -1,0 +1,33 @@
+[log]
+level = "info"
+output = "run.log"
+max_size = "10MB"
+
+# [api]
+# listen = "127.0.0.1:5000"
+# token = ""
+# tls = { cert_path = "cert.pem", key_path = "key.pem" }
+
+[dns]
+server = "https://one.one.one.one/dns-query"
+
+[routing]
+rules = [
+    { outbound_tags = [
+        "direct",
+    ] },
+]
+
+[[inbounds]]
+tag = "entry"
+protocol = "lite"
+protocol_settings = { users = [
+    { id = "00000000000000000000000000000000", expire_time = "", read_rate_limit = "", write_rate_limit = "" },
+] }
+tls = { cert_path = "cert.pem", key_path = "key.pem" }
+listen = "0.0.0.0:443"
+
+
+[[outbounds]]
+tag = "direct"
+dial_mode = "auto"

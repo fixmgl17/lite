@@ -1,0 +1,116 @@
+name: Release
+
+permissions:
+    contents: write
+
+on:
+    workflow_dispatch:
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                shell: bash
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Set up Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version: "1.24"
+                  check-latest: true
+                  cache-dependency-path: go.sum
+
+            - name: Build
+              run: |
+                  build_to_osarch() {
+                      osarch=$1
+                      goos=$(echo "$osarch" | cut -d '/' -f1)
+                      goarch=$(echo "$osarch" | cut -d '/' -f2)
+                      export GOOS=$goos
+                      export GOARCH=$goarch
+                      output=$2
+                      mod_basename=$(basename "$(head -n 1 go.mod | cut -f 2 -d " ")")
+                      if [ "${output: -1}" = "/" ]; then
+                          output="${output}${mod_basename}_${GOOS}_${GOARCH}"
+                      else
+                          output="${output}/${mod_basename}_${GOOS}_${GOARCH}"
+                      fi
+                      if [ "$GOOS" = "windows" ]; then
+                          output="${output}.exe"
+                      fi
+                      echo "building for $(go env GOOS)/$(go env GOARCH)  ==>  ${output}"
+                      go build -ldflags "-s -w $LDFLAGS" -trimpath  -o "${output}"
+                  }
+                  go mod download
+                  mkdir -p dist
+                  export CGO_ENABLED=0
+                  targets=("linux/amd64" "linux/arm64" "windows/amd64" "windows/arm64" "darwin/amd64" "darwin/arm64")
+                  for osarch in "${targets[@]}"; do
+                      build_to_osarch "$osarch" "dist" &
+                  done
+                  wait
+                  echo "build finished"
+
+                  geosite_dat_url="https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+                  geoip_dat_url="https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+
+                  # plus
+                  geosite_dat_url="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+                  geoip_dat_url="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+
+                  curl -L -o "dist/geosite.dat" "$geosite_dat_url"
+                  curl -L -o "dist/geoip.dat" "$geoip_dat_url"
+
+                  echo "TAG_NAME=$(go run main.go -v | cut -d ' ' -f3)" >> "$GITHUB_ENV"
+
+            - name: Delete old releases and actions
+              env:
+                  TOKEN: ${{ secrets.TOKEN }}
+              run: |
+                  run_ids=$(curl -s -H "Authorization: token $TOKEN" \
+                    "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=100" |
+                    jq -r '.workflow_runs[].id')
+
+                  count=0
+                  for run_id in $run_ids; do
+                    if [ "$count" -eq 0 ]; then
+                      count=$((count + 1))
+                      continue
+                    fi
+                    echo "Deleting workflow run ID: $run_id"
+                    curl -s -X DELETE -H "Authorization: token $TOKEN" \
+                      "https://api.github.com/repos/${{ github.repository }}/actions/runs/$run_id"
+                  done
+
+                  releases=$(curl -s -H "Authorization: token $TOKEN" \
+                    "https://api.github.com/repos/${{ github.repository }}/releases" | jq -r '.[].id')
+
+                  for release_id in $releases; do
+                    echo "Deleting release ID: $release_id"
+                    curl -s -X DELETE -H "Authorization: token $TOKEN" \
+                      "https://api.github.com/repos/${{ github.repository }}/releases/$release_id"
+                  done
+                 
+                  if  curl -s -H "Authorization: token $TOKEN" \
+                                      "https://api.github.com/repos/${{ github.repository }}/git/refs/tags" | grep -q '"ref"'; then
+                    tags=$(curl -s -H "Authorization: token $TOKEN" \
+                                "https://api.github.com/repos/${{ github.repository }}/git/refs/tags" | jq -r '.[].ref')
+                    for tag in $tags; do
+                      echo "tag: $tag"
+                      tag_name=$(echo $tag | sed 's|refs/tags/||')
+                      echo "Deleting tag: $tag_name"
+                      curl -s -X DELETE -H "Authorization: token $TOKEN" \
+                        "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$tag_name"
+                    done
+                  fi
+            - name: Release
+              uses: softprops/action-gh-release@v2
+              with:
+                  files: "dist/*"
+                  tag_name: ${{ env.TAG_NAME }}
+                  prerelease: false
+                  name: "${{ env.TAG_NAME }}"
+                  body_path: "CHANGELOG.md"
